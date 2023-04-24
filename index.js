@@ -3,29 +3,34 @@ import cheerio from "cheerio";
 
 /** 微信开放文档 服务端文档首页 */
 const BASE_URL = "https://developers.weixin.qq.com/miniprogram/dev/OpenApiDoc/";
-const file = "apiList.js";
+const FILE_NAME = "apiList.js";
 
 async function main() {
-  const html = await fetch(BASE_URL);
-  const text = await html.text();
-  const reg = /<tr><td><a href=\"([^"]*)">([A-Za-z]+)<\/a><\/td>/g;
-  const matched = text.matchAll(reg);
-  const apiList = {};
-  let fileContent = "/** 小程序服务端接口列表 */\nexport default mpi = {";
-  for (const match of matched) {
-    const docAddr = match[1].replace("./", "");
-    const { name, method, url, doc } = await getApiAddr(docAddr);
-    apiList[match[2]] = { name, doc, method, url };
+  try {
+    const html = await fetch(BASE_URL);
+    const text = await html.text();
+    const $ = cheerio.load(text);
+    const apiList = {};
+    const apiDocs = $("a[href^='./'][href$='.html']").toArray();
 
-    fileContent += apiContentGenerator(match[2], apiList[match[2]]);
+    const apiPromises = apiDocs.map(async (elem) => {
+      const docAddr = $(elem).attr("href").replace("./", "");
+      const { name, method, url, doc } = await getApiAddr(BASE_URL + docAddr);
+      apiList[elem.firstChild.data] = { name, doc, method, url };
+      return apiContentGenerator(elem.firstChild.data, apiList[elem.firstChild.data]);
+    });
+
+    const apiContents = await Promise.all(apiPromises);
+    const fileContent = "/** 小程序服务端接口列表 */\nexport default mpi = {" + apiContents.join("") + "}";
+    fs.writeFileSync(FILE_NAME, fileContent);
+    fs.writeFileSync(FILE_NAME + "on", JSON.stringify(apiList, null, 2));
+    console.log("Done!");
+  } catch (err) {
+    console.error(err);
   }
-  fileContent += "}";
-  fs.writeFileSync(file, fileContent);
-  fs.writeFileSync(file + "on", JSON.stringify(apiList, null, 2));
-  console.log("Done!");
 }
 
-function apiContentGenerator(api,{doc,name,method,url}) {
+function apiContentGenerator(api, { doc, name, method, url }) {
   return `
   /** 
    * {@link ${doc} ${name}}
@@ -33,26 +38,20 @@ function apiContentGenerator(api,{doc,name,method,url}) {
    * ${method}
    */
   ${api}: "${url}",
-  `
+  `;
 }
 
-async function getApiAddr(docAddr) {
-  // 接口文档地址
-  const apiDoc = BASE_URL + docAddr;
-
+async function getApiAddr(apiDoc) {
   const html = await fetch(apiDoc);
   const text = await html.text();
-
   const $ = cheerio.load(text);
-  // 接口名称
   const apiName = $("#docContent h1").attr("id");
-  // 接口请求方式、地址
   const callMethod = $("#docContent #HTTPS-调用").next().text();
   let [httpMethod, apiUrl] = callMethod.replace("\n", "").split(" ");
   apiUrl = apiUrl.replace(/\?.*/, "");
   return {
     name: apiName,
-    method: httpMethod.toLocaleLowerCase(),
+    method: httpMethod.toLowerCase(),
     url: apiUrl,
     doc: apiDoc,
   };
